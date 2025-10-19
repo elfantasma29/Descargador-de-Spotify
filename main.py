@@ -22,9 +22,10 @@ async def root():
     return JSONResponse(
         content={
             "status_code": 200,
-            "message": "Spotify Downloader API",
-            "developer": "El Impaciente",
-            "telegram_channel": "https://t.me/Apisimpacientes",
+            "message": "Hola, gracias por utilizar la API creada por Emmanuel",
+            "developer": "El Fantasma de Tutoriales para Ciegos",
+            "telegram_channel": "https://t.me/TutorialesParaCiegos",
+            "youtube_channel": "https://youtube.com/@tutorialesparaciegos?si=gi9UfLRRCVmhC7N7",
             "endpoints": {
                 "/download": "Download Spotify tracks - Use: /download?url=SPOTIFY_URL",
                 "/search": "Search Spotify tracks - Use: /search?query=SONG_NAME",
@@ -41,8 +42,9 @@ async def download_track(url: str = Query(default="", description="Spotify track
             content={
                 "status_code": 400,
                 "message": "Parameter 'url' is required",
-                "developer": "El Impaciente",
-                "telegram_channel": "https://t.me/Apisimpacientes",
+                "developer": "El Fantasma de Tutoriales para Ciegos",
+                "telegram_channel": "https://t.me/TutorialesParaCiegos",
+                "youtube_channel": "https://youtube.com/@tutorialesparaciegos?si=gi9UfLRRCVmhC7N7",
                 "example": "/download?url=https://open.spotify.com/track/TRACK_ID"
             },
             status_code=400
@@ -68,8 +70,9 @@ async def download_track(url: str = Query(default="", description="Spotify track
                     content={
                         "status_code": 400,
                         "message": "Error fetching track data. Verify the Spotify URL is valid",
-                        "developer": "El Impaciente",
-                        "telegram_channel": "https://t.me/Apisimpacientes"
+                        "developer": "El Fantasma de Tutoriales para Ciegos",
+                        "telegram_channel": "https://t.me/TutorialesParaCiegos",
+                        "youtube_channel": "https://youtube.com/@tutorialesparaciegos?si=gi9UfLRRCVmhC7N7"
                     },
                     status_code=400
                 )
@@ -86,8 +89,9 @@ async def download_track(url: str = Query(default="", description="Spotify track
                     content={
                         "status_code": 400,
                         "message": "Error generating download link",
-                        "developer": "El Impaciente",
-                        "telegram_channel": "https://t.me/Apisimpacientes"
+                        "developer": "El Fantasma de Tutoriales para Ciegos",
+                        "telegram_channel": "https://t.me/TutorialesParaCiegos",
+                        "youtube_channel": "https://youtube.com/@tutorialesparaciegos?si=gi9UfLRRCVmhC7N7"
                     },
                     status_code=400
                 )
@@ -110,8 +114,9 @@ async def download_track(url: str = Query(default="", description="Spotify track
                     "cover": cover,
                     "duration": f"{duration // 60}:{duration % 60:02d}",
                     "download_url": download_url,
-                    "developer": "El Impaciente",
-                    "telegram_channel": "https://t.me/Apisimpacientes"
+                    "developer": "El Fantasma de Tutoriales para Ciegos",
+                    "telegram_channel": "https://t.me/TutorialesParaCiegos",
+                    "youtube_channel": "https://youtube.com/@tutorialesparaciegos?si=gi9UfLRRCVmhC7N7"
                 },
                 status_code=200
             )
@@ -121,8 +126,9 @@ async def download_track(url: str = Query(default="", description="Spotify track
             content={
                 "status_code": 408,
                 "message": "Request timeout. The external API took too long to respond",
-                "developer": "El Impaciente",
-                "telegram_channel": "https://t.me/Apisimpacientes"
+                "developer": "El Fantasma de Tutoriales para Ciegos",
+                "telegram_channel": "https://t.me/TutorialesParaCiegos",
+                "youtube_channel": "https://youtube.com/@tutorialesparaciegos?si=gi9UfLRRCVmhC7N7"
             },
             status_code=408
         )
@@ -132,8 +138,9 @@ async def download_track(url: str = Query(default="", description="Spotify track
                 "status_code": 500,
                 "message": "Error processing track. Verify the URL is correct",
                 "error": str(e),
-                "developer": "El Impaciente",
-                "telegram_channel": "https://t.me/Apisimpacientes"
+                "developer": "El Fantasma de Tutoriales para Ciegos",
+                "telegram_channel": "https://t.me/TutorialesParaCiegos",
+                "youtube_channel": "https://youtube.com/@tutorialesparaciegos?si=gi9UfLRRCVmhC7N7"
             },
             status_code=500
         )
@@ -145,8 +152,9 @@ async def search_track(query: str = Query(default="", description="Search query 
             content={
                 "status_code": 400,
                 "message": "Parameter 'query' is required",
-                "developer": "El Impaciente",
-                "telegram_channel": "https://t.me/Apisimpacientes",
+                "developer": "El Fantasma de Tutoriales para Ciegos",
+                "telegram_channel": "https://t.me/TutorialesParaCiegos",
+                "youtube_channel": "https://youtube.com/@tutorialesparaciegos?si=gi9UfLRRCVmhC7N7",
                 "example": "/search?query=song name artist"
             },
             status_code=400
@@ -173,8 +181,9 @@ async def search_track(query: str = Query(default="", description="Search query 
                     content={
                         "status_code": 400,
                         "message": "Error authenticating with Spotify",
-                        "developer": "El Impaciente",
-                        "telegram_channel": "https://t.me/Apisimpacientes"
+                        "developer": "El Fantasma de Tutoriales para Ciegos",
+                        "telegram_channel": "https://t.me/TutorialesParaCiegos",
+                        "youtube_channel": "https://youtube.com/@tutorialesparaciegos?si=gi9UfLRRCVmhC7N7"
                     },
                     status_code=400
                 )
@@ -189,8 +198,9 @@ async def search_track(query: str = Query(default="", description="Search query 
                     content={
                         "status_code": 400,
                         "message": "Error searching tracks",
-                        "developer": "El Impaciente",
-                        "telegram_channel": "https://t.me/Apisimpacientes"
+                        "developer": "El Fantasma de Tutoriales para Ciegos",
+                        "telegram_channel": "https://t.me/TutorialesParaCiegos",
+                        "youtube_channel": "https://youtube.com/@tutorialesparaciegos?si=gi9UfLRRCVmhC7N7"
                     },
                     status_code=400
                 )
@@ -213,8 +223,9 @@ async def search_track(query: str = Query(default="", description="Search query 
                     "status_code": 200,
                     "results": len(tracks),
                     "tracks": tracks,
-                    "developer": "El Impaciente",
-                    "telegram_channel": "https://t.me/Apisimpacientes"
+                    "developer": "El Fantasma de Tutoriales para Ciegos",
+                    "telegram_channel": "https://t.me/TutorialesParaCiegos",
+                    "youtube_channel": "https://youtube.com/@tutorialesparaciegos?si=gi9UfLRRCVmhC7N7"
                 },
                 status_code=200
             )
@@ -224,8 +235,9 @@ async def search_track(query: str = Query(default="", description="Search query 
             content={
                 "status_code": 408,
                 "message": "Request timeout. The search took too long to respond",
-                "developer": "El Impaciente",
-                "telegram_channel": "https://t.me/Apisimpacientes"
+                "developer": "El Fantasma de Tutoriales para Ciegos",
+                "telegram_channel": "https://t.me/TutorialesParaCiegos",
+                "youtube_channel": "https://youtube.com/@tutorialesparaciegos?si=gi9UfLRRCVmhC7N7"
             },
             status_code=408
         )
@@ -235,8 +247,9 @@ async def search_track(query: str = Query(default="", description="Search query 
                 "status_code": 500,
                 "message": "Error searching tracks",
                 "error": str(e),
-                "developer": "El Impaciente",
-                "telegram_channel": "https://t.me/Apisimpacientes"
+                "developer": "El Fantasma de Tutoriales para Ciegos",
+                "telegram_channel": "https://t.me/TutorialesParaCiegos",
+                "youtube_channel": "https://youtube.com/@tutorialesparaciegos?si=gi9UfLRRCVmhC7N7"
             },
             status_code=500
         )
@@ -247,8 +260,9 @@ async def health_check():
         content={
             "status": "healthy",
             "service": "Spotify Downloader API - Vercel",
-            "developer": "El Impaciente",
-            "telegram_channel": "https://t.me/Apisimpacientes"
+            "developer": "El Fantasma de Tutoriales para Ciegos",
+            "telegram_channel": "https://t.me/TutorialesParaCiegos",
+            "youtube_channel": "https://youtube.com/@tutorialesparaciegos?si=gi9UfLRRCVmhC7N7"
         },
         status_code=200
     )
