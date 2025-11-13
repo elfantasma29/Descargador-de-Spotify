@@ -1,27 +1,16 @@
-"""
-Spotify Downloader API - Sistema Multi-API con Fallback Automático
-Versión 3.0 - Octubre 2025
-
-Desarrollado por: El Impaciente
-Telegram: https://t.me/Apisimpacientes
-
-Sistema inteligente que prueba múltiples APIs hasta encontrar una disponible
-"""
-
-from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Query, HTTPException
+from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
-from urllib.parse import quote
-from typing import Optional, Dict, Any, List
 import asyncio
+import base64
+import re
 from datetime import datetime
+from typing import List, Dict, Any
+import time
+from collections import deque
 
-app = FastAPI(
-    title="Spotify Downloader API - Multi-Source",
-    description="Sistema inteligente con fallback automático entre múltiples APIs",
-    version="3.0"
-)
+app = FastAPI(title="Gemini TTS API - Multi-Speaker")
 
 app.add_middleware(
     CORSMiddleware,
@@ -31,612 +20,341 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ==================== CONFIGURACIÓN DE APIS ====================
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent"
 
-# Lista de APIs disponibles (ordenadas por prioridad)
-API_SOURCES = [
-    {
-        "name": "SpotifyDown Original",
-        "base_url": "https://api.spotifydown.com",
-        "metadata_endpoint": "/metadata/track/{track_id}",
-        "download_endpoint": "/download/{track_id}",
-        "priority": 1,
-        "active": True
-    },
-    {
-        "name": "Spotimate",
-        "base_url": "https://spotimate.io/api",
-        "metadata_endpoint": "/metadata/track/{track_id}",
-        "download_endpoint": "/download/{track_id}",
-        "priority": 2,
-        "active": True
-    },
-    {
-        "name": "SpotiDown Alternative",
-        "base_url": "https://api.spotidown.com",
-        "metadata_endpoint": "/metadata/track/{track_id}",
-        "download_endpoint": "/download/{track_id}",
-        "priority": 3,
-        "active": True
-    },
-    {
-        "name": "Spotify-Down Web",
-        "base_url": "https://spotify-down.com/api",
-        "metadata_endpoint": "/track/{track_id}",
-        "download_endpoint": "/download/{track_id}",
-        "priority": 4,
-        "active": True
-    },
-    {
-        "name": "SpotiDownloader",
-        "base_url": "https://api.spotidownloader.com",
-        "metadata_endpoint": "/metadata/{track_id}",
-        "download_endpoint": "/download/{track_id}",
-        "priority": 5,
-        "active": True
-    }
+VOICES = [
+    'Kore', 'Puck', 'Charon', 'Leda', 'Achernar', 'Aoede', 'Autonoe',
+    'Callirrhoe', 'Despina', 'Erinome', 'Gacrux', 'Laomedeia',
+    'Pulcherrima', 'Sulafat', 'Vindemiatrix', 'Zephyr', 'Achird',
+    'Algenib', 'Algieba', 'Alnilam', 'Enceladus', 'Fenrir', 'Iapetus',
+    'Orus', 'Rasalgethi', 'Sadachbia', 'Sadaltager', 'Schedar',
+    'Umbriel', 'Zubenelgenubi'
 ]
 
-# Headers por defecto para las peticiones
-DEFAULT_HEADERS = {
-    "Content-Type": "application/json",
-    "User-Agent": "Mozilla/5.0 (Linux; Android 14; V2336 Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.135 Mobile Safari/537.36",
-    "Accept": "application/json",
-    "Origin": "https://spotifydown.com",
-    "Referer": "https://spotifydown.com/"
-}
-
-# ==================== FUNCIONES AUXILIARES ====================
-
-async def try_api_source(
-    client: httpx.AsyncClient,
-    source: Dict[str, Any],
-    track_id: str,
-    endpoint_type: str = "metadata"
-) -> Dict[str, Any]:
-    """
-    Intenta obtener datos de una fuente API específica
+class RateLimiter:
+    def __init__(self, rpm: int = 5, max_concurrent: int = 3):
+        self.rpm = rpm
+        self.max_concurrent = max_concurrent
+        self.semaphore = asyncio.Semaphore(max_concurrent)
+        self.request_times = deque()
+        self.lock = asyncio.Lock()
     
-    Args:
-        client: Cliente HTTP
-        source: Diccionario con información de la API
-        track_id: ID de la canción de Spotify
-        endpoint_type: Tipo de endpoint ("metadata" o "download")
-    
-    Returns:
-        Diccionario con resultado de la operación
-    """
-    if not source.get("active", True):
-        return {
-            "success": False,
-            "error": "API desactivada",
-            "source": source["name"]
-        }
-    
-    try:
-        endpoint_key = f"{endpoint_type}_endpoint"
-        endpoint = source.get(endpoint_key, "")
-        url = source["base_url"] + endpoint.format(track_id=track_id)
+    async def acquire(self):
+        async with self.lock:
+            now = time.time()
+            while self.request_times and self.request_times[0] < now - 60:
+                self.request_times.popleft()
+            
+            if len(self.request_times) >= self.rpm:
+                sleep_time = 60 - (now - self.request_times[0])
+                if sleep_time > 0:
+                    await asyncio.sleep(sleep_time)
+                    return await self.acquire()
+            
+            self.request_times.append(now)
         
-        response = await client.get(
-            url,
-            headers=DEFAULT_HEADERS,
-            timeout=15.0,
-            follow_redirects=True
-        )
+        await self.semaphore.acquire()
+    
+    def release(self):
+        self.semaphore.release()
+
+rate_limiter = RateLimiter(rpm=5, max_concurrent=3)
+
+def parse_text_to_segments(text: str) -> List[Dict[str, str]]:
+    voice_regex = re.compile(r'\{\{@(\w+)\}\}')
+    segments = []
+    last_index = 0
+    current_voice = None
+    
+    for match in voice_regex.finditer(text):
+        voice_name = match.group(1)
         
-        if response.status_code == 200:
-            try:
-                data = response.json()
-                return {
-                    "success": True,
-                    "data": data,
-                    "source": source["name"],
-                    "response_time": response.elapsed.total_seconds()
-                }
-            except Exception as e:
-                return {
-                    "success": False,
-                    "error": f"JSON parse error: {str(e)}",
-                    "source": source["name"]
-                }
+        if voice_name not in VOICES:
+            continue
+        
+        if current_voice and last_index < match.start():
+            content = text[last_index:match.start()].strip()
+            if content:
+                segments.append({
+                    'voice': current_voice,
+                    'text': re.sub(r'\s+', ' ', content)
+                })
+        
+        current_voice = voice_name
+        last_index = match.end()
+    
+    if current_voice and last_index < len(text):
+        content = text[last_index:].strip()
+        if content:
+            segments.append({
+                'voice': current_voice,
+                'text': re.sub(r'\s+', ' ', content)
+            })
+    
+    return segments
+
+def group_segments_by_voice_pairs(segments: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    if not segments:
+        return []
+    
+    groups = []
+    voices_in_group = set()
+    current_group = []
+    
+    for segment in segments:
+        if segment['voice'] in voices_in_group:
+            current_group.append(segment)
+        elif len(voices_in_group) < 2:
+            voices_in_group.add(segment['voice'])
+            current_group.append(segment)
         else:
-            return {
-                "success": False,
-                "error": f"HTTP {response.status_code}",
-                "source": source["name"]
+            groups.append({
+                'segments': current_group,
+                'voices': list(voices_in_group)
+            })
+            voices_in_group = {segment['voice']}
+            current_group = [segment]
+    
+    if current_group:
+        groups.append({
+            'segments': current_group,
+            'voices': list(voices_in_group)
+        })
+    
+    return groups
+
+def format_group_for_api(group: Dict[str, Any]) -> str:
+    text_parts = []
+    for segment in group['segments']:
+        text_parts.append(f"{segment['voice']}: {segment['text']}")
+    return '\n'.join(text_parts)
+
+async def generate_audio_for_group(api_key: str, group: Dict[str, Any], group_index: int) -> Dict[str, Any]:
+    conversation_text = format_group_for_api(group)
+    
+    speaker_voice_configs = [
+        {
+            "speaker": voice_name,
+            "voiceConfig": {
+                "prebuiltVoiceConfig": {
+                    "voiceName": voice_name
+                }
             }
-            
-    except httpx.TimeoutException:
-        return {
-            "success": False,
-            "error": "Timeout",
-            "source": source["name"]
         }
-    except httpx.ConnectError:
-        return {
-            "success": False,
-            "error": "Connection error",
-            "source": source["name"]
+        for voice_name in group['voices']
+    ]
+    
+    payload = {
+        "contents": [{
+            "parts": [{
+                "text": conversation_text
+            }]
+        }],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "multiSpeakerVoiceConfig": {
+                    "speakerVoiceConfigs": speaker_voice_configs
+                }
+            }
         }
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "source": source["name"]
-        }
-
-async def fetch_with_fallback(
-    track_id: str,
-    endpoint_type: str = "metadata"
-) -> Dict[str, Any]:
-    """
-    Intenta obtener datos usando múltiples fuentes con fallback automático
+    }
     
-    Args:
-        track_id: ID de la canción de Spotify
-        endpoint_type: Tipo de endpoint a consultar
+    await rate_limiter.acquire()
     
-    Returns:
-        Diccionario con los datos obtenidos o información de error
-    """
-    # Ordenar fuentes por prioridad
-    sorted_sources = sorted(
-        [s for s in API_SOURCES if s.get("active", True)],
-        key=lambda x: x.get("priority", 999)
-    )
-    
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        for source in sorted_sources:
-            result = await try_api_source(client, source, track_id, endpoint_type)
-            
-            if result.get("success"):
-                return result
-        
-        # Si todas fallan
-        return {
-            "success": False,
-            "error": "All API sources failed",
-            "attempted_sources": [s["name"] for s in sorted_sources],
-            "total_sources": len(sorted_sources)
-        }
-
-async def get_spotify_metadata(track_id: str) -> Optional[Dict[str, Any]]:
-    """
-    Obtiene metadata oficial de Spotify usando su API
-    
-    Args:
-        track_id: ID de la canción
-    
-    Returns:
-        Diccionario con metadata o None si falla
-    """
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # Obtener token
-            token_response = await client.post(
-                "https://accounts.spotify.com/api/token",
-                data={"grant_type": "client_credentials"},
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-                auth=("anonymous", "anonymous")
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{GEMINI_API_URL}?key={api_key}",
+                json=payload,
+                headers={"Content-Type": "application/json"}
             )
             
-            if token_response.status_code != 200:
-                return None
+            if response.status_code != 200:
+                error_data = response.json() if response.text else {}
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Gemini API error: {error_data.get('error', {}).get('message', 'Unknown error')}"
+                )
             
-            access_token = token_response.json().get("access_token", "")
+            data = response.json()
             
-            # Obtener metadata
-            track_response = await client.get(
-                f"https://api.spotify.com/v1/tracks/{track_id}",
-                headers={"Authorization": f"Bearer {access_token}"}
-            )
+            if not data.get('candidates') or not data['candidates'][0].get('content'):
+                raise HTTPException(status_code=500, detail="Invalid API response structure")
             
-            if track_response.status_code == 200:
-                return track_response.json()
+            audio_data = data['candidates'][0]['content']['parts'][0]['inlineData']['data']
             
-            return None
-            
-    except Exception:
-        return None
+            return {
+                'success': True,
+                'audio_data': audio_data,
+                'group_index': group_index
+            }
+    
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=408, detail=f"Timeout generating audio for group {group_index + 1}")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"Network error: {str(e)}")
+    finally:
+        rate_limiter.release()
 
-def format_duration(duration_ms: int) -> str:
-    """Formatea duración de milisegundos a MM:SS"""
-    minutes = duration_ms // 60000
-    seconds = (duration_ms % 60000) // 1000
-    return f"{minutes}:{seconds:02d}"
+def extract_pcm_data(base64_audio: str) -> bytes:
+    return base64.b64decode(base64_audio)
 
-# ==================== ENDPOINTS ====================
+def concatenate_pcm_data(pcm_arrays: List[bytes]) -> bytes:
+    return b''.join(pcm_arrays)
+
+def add_wav_header(pcm_data: bytes, sample_rate: int = 24000, channels: int = 1, bits_per_sample: int = 16) -> bytes:
+    data_size = len(pcm_data)
+    file_size = 36 + data_size
+    byte_rate = sample_rate * channels * (bits_per_sample // 8)
+    block_align = channels * (bits_per_sample // 8)
+    
+    header = bytearray(44)
+    
+    header[0:4] = b'RIFF'
+    header[4:8] = file_size.to_bytes(4, 'little')
+    header[8:12] = b'WAVE'
+    header[12:16] = b'fmt '
+    header[16:20] = (16).to_bytes(4, 'little')
+    header[20:22] = (1).to_bytes(2, 'little')
+    header[22:24] = channels.to_bytes(2, 'little')
+    header[24:28] = sample_rate.to_bytes(4, 'little')
+    header[28:32] = byte_rate.to_bytes(4, 'little')
+    header[32:34] = block_align.to_bytes(2, 'little')
+    header[34:36] = bits_per_sample.to_bytes(2, 'little')
+    header[36:40] = b'data'
+    header[40:44] = data_size.to_bytes(4, 'little')
+    
+    return bytes(header) + pcm_data
 
 @app.get("/")
 async def root():
-    """Endpoint raíz con información de la API"""
-    active_sources = [s["name"] for s in API_SOURCES if s.get("active", True)]
-    
     return JSONResponse(
         content={
             "status_code": 200,
-            "message": "🎵 Spotify Downloader API - Sistema Multi-Source v3.0",
-            "version": "3.0",
-            "system": "Multi-API con fallback automático",
-            "developer": "El Impaciente",
-            "telegram_channel": "https://t.me/Apisimpacientes",
-            "features": [
-                "✅ Sistema de fallback entre múltiples APIs",
-                "✅ Detección automática de APIs disponibles",
-                "✅ Metadata oficial de Spotify",
-                "✅ Búsqueda de canciones",
-                "✅ Verificación de estado de APIs"
-            ],
-            "active_sources": active_sources,
-            "total_sources": len(API_SOURCES),
+            "service": "Gemini TTS API - Multi-Speaker",
+            "version": "1.0.0",
             "endpoints": {
-                "/download": "Descargar track - Uso: /download?url=SPOTIFY_URL",
-                "/search": "Buscar tracks - Uso: /search?query=CANCION",
-                "/metadata": "Obtener metadata - Uso: /metadata?url=SPOTIFY_URL",
-                "/check-sources": "Verificar estado de todas las APIs",
-                "/health": "Estado de salud de la API"
+                "/generate": "POST - Generate multi-speaker audio",
+                "/voices": "GET - List available voices",
+                "/health": "GET - Check API health"
             },
-            "timestamp": datetime.utcnow().isoformat()
+            "features": [
+                "Multi-speaker TTS (unlimited speakers)",
+                "Parallel audio generation",
+                "Intelligent rate limiting",
+                "Compatible with old HTTP clients",
+                "WAV audio output"
+            ],
+            "supported_voices": len(VOICES),
+            "max_speakers_per_request": "Unlimited (grouped in pairs)"
         },
         status_code=200
     )
 
-@app.get("/download")
-async def download_track(url: str = Query(default="", description="Spotify track URL")):
-    """
-    Endpoint principal para descargar tracks
-    Intenta múltiples APIs hasta encontrar una que funcione
-    """
-    if not url or url.strip() == "":
-        return JSONResponse(
-            content={
-                "status_code": 400,
-                "message": "Parameter 'url' is required",
-                "developer": "El Impaciente",
-                "telegram_channel": "https://t.me/Apisimpacientes",
-                "example": "/download?url=https://open.spotify.com/track/3n3Ppam7vgaVa1iaRUc9Lp"
-            },
-            status_code=400
-        )
-    
-    try:
-        # Extraer track ID
-        track_id = url.split('/')[-1].split('?')[0]
-        
-        # Obtener metadata oficial de Spotify (siempre disponible)
-        spotify_metadata = await get_spotify_metadata(track_id)
-        
-        if not spotify_metadata:
-            return JSONResponse(
-                content={
-                    "status_code": 404,
-                    "message": "Track not found on Spotify",
-                    "developer": "El Impaciente",
-                    "telegram_channel": "https://t.me/Apisimpacientes"
-                },
-                status_code=404
-            )
-        
-        # Intentar obtener enlace de descarga con fallback
-        download_result = await fetch_with_fallback(track_id, "download")
-        
-        if not download_result.get("success"):
-            # Si todas las APIs de descarga fallan
-            return JSONResponse(
-                content={
-                    "status_code": 503,
-                    "message": "⚠️ Todas las fuentes de descarga están temporalmente no disponibles",
-                    "track_info": {
-                        "title": spotify_metadata.get("name", "Unknown"),
-                        "artists": ", ".join([a.get("name", "") for a in spotify_metadata.get("artists", [])]),
-                        "album": spotify_metadata.get("album", {}).get("name", "Unknown"),
-                        "cover": spotify_metadata.get("album", {}).get("images", [{}])[0].get("url", "")
-                    },
-                    "attempted_sources": download_result.get("attempted_sources", []),
-                    "suggestion": "Las APIs externas están caídas. Intenta de nuevo en unos minutos.",
-                    "alternative": "Considera usar spotDL: https://github.com/spotDL/spotify-downloader",
-                    "developer": "El Impaciente",
-                    "telegram_channel": "https://t.me/Apisimpacientes"
-                },
-                status_code=503
-            )
-        
-        # Construir respuesta exitosa
-        download_data = download_result.get("data", {})
-        download_url = download_data.get("link", "") or download_data.get("download_url", "") or download_data.get("url", "")
-        
-        duration_ms = spotify_metadata.get("duration_ms", 0)
-        
-        return JSONResponse(
-            content={
-                "status_code": 200,
-                "title": spotify_metadata.get("name", "Unknown"),
-                "artists": ", ".join([a.get("name", "") for a in spotify_metadata.get("artists", [])]),
-                "album": spotify_metadata.get("album", {}).get("name", "Unknown"),
-                "cover": spotify_metadata.get("album", {}).get("images", [{}])[0].get("url", ""),
-                "duration": format_duration(duration_ms),
-                "release_date": spotify_metadata.get("album", {}).get("release_date", "Unknown"),
-                "explicit": spotify_metadata.get("explicit", False),
-                "popularity": spotify_metadata.get("popularity", 0),
-                "download_url": download_url,
-                "source_used": download_result.get("source", "Unknown"),
-                "response_time": f"{download_result.get('response_time', 0):.2f}s",
-                "developer": "El Impaciente",
-                "telegram_channel": "https://t.me/Apisimpacientes"
-            },
-            status_code=200
-        )
-        
-    except httpx.TimeoutException:
-        return JSONResponse(
-            content={
-                "status_code": 408,
-                "message": "Request timeout",
-                "developer": "El Impaciente",
-                "telegram_channel": "https://t.me/Apisimpacientes"
-            },
-            status_code=408
-        )
-    except Exception as e:
-        return JSONResponse(
-            content={
-                "status_code": 500,
-                "message": "Error processing track",
-                "error": str(e),
-                "developer": "El Impaciente",
-                "telegram_channel": "https://t.me/Apisimpacientes"
-            },
-            status_code=500
-        )
+@app.get("/voices")
+async def get_voices():
+    return JSONResponse(
+        content={
+            "status_code": 200,
+            "total_voices": len(VOICES),
+            "voices": VOICES,
+            "usage": "Use {{@VoiceName}} in your text to specify speaker"
+        },
+        status_code=200
+    )
 
-@app.get("/metadata")
-async def get_metadata(url: str = Query(default="", description="Spotify track URL")):
-    """
-    Obtiene solo la metadata de un track sin descargarlo
-    Útil para previsualización
-    """
-    if not url or url.strip() == "":
-        return JSONResponse(
-            content={
-                "status_code": 400,
-                "message": "Parameter 'url' is required",
-                "developer": "El Impaciente",
-                "telegram_channel": "https://t.me/Apisimpacientes",
-                "example": "/metadata?url=https://open.spotify.com/track/TRACK_ID"
-            },
-            status_code=400
-        )
+@app.post("/generate")
+async def generate_audio(
+    text: str = Query(..., description="Text with voice tags {{@VoiceName}}"),
+    api_key: str = Query(..., description="Your Gemini API key"),
+    format: str = Query(default="wav", description="Output format: wav or base64")
+):
+    if not text or not text.strip():
+        raise HTTPException(status_code=400, detail="Parameter 'text' is required")
+    
+    if not api_key or not api_key.strip():
+        raise HTTPException(status_code=400, detail="Parameter 'api_key' is required")
     
     try:
-        track_id = url.split('/')[-1].split('?')[0]
-        spotify_metadata = await get_spotify_metadata(track_id)
+        segments = parse_text_to_segments(text)
         
-        if not spotify_metadata:
-            return JSONResponse(
-                content={
-                    "status_code": 404,
-                    "message": "Track not found",
-                    "developer": "El Impaciente",
-                    "telegram_channel": "https://t.me/Apisimpacientes"
-                },
-                status_code=404
+        if not segments:
+            raise HTTPException(
+                status_code=400,
+                detail="No valid voice tags found. Use {{@VoiceName}} format"
             )
         
-        return JSONResponse(
-            content={
-                "status_code": 200,
-                "title": spotify_metadata.get("name", "Unknown"),
-                "artists": ", ".join([a.get("name", "") for a in spotify_metadata.get("artists", [])]),
-                "album": spotify_metadata.get("album", {}).get("name", "Unknown"),
-                "cover": spotify_metadata.get("album", {}).get("images", [{}])[0].get("url", ""),
-                "duration": format_duration(spotify_metadata.get("duration_ms", 0)),
-                "release_date": spotify_metadata.get("album", {}).get("release_date", "Unknown"),
-                "explicit": spotify_metadata.get("explicit", False),
-                "popularity": spotify_metadata.get("popularity", 0),
-                "preview_url": spotify_metadata.get("preview_url", None),
-                "spotify_url": url,
-                "developer": "El Impaciente",
-                "telegram_channel": "https://t.me/Apisimpacientes"
-            },
-            status_code=200
-        )
+        groups = group_segments_by_voice_pairs(segments)
+        total_groups = len(groups)
         
-    except Exception as e:
-        return JSONResponse(
-            content={
-                "status_code": 500,
-                "message": "Error fetching metadata",
-                "error": str(e),
-                "developer": "El Impaciente",
-                "telegram_channel": "https://t.me/Apisimpacientes"
-            },
-            status_code=500
-        )
-
-@app.get("/search")
-async def search_track(query: str = Query(default="", description="Search query")):
-    """
-    Busca tracks en Spotify
-    """
-    if not query or query.strip() == "":
-        return JSONResponse(
-            content={
-                "status_code": 400,
-                "message": "Parameter 'query' is required",
-                "developer": "El Impaciente",
-                "telegram_channel": "https://t.me/Apisimpacientes",
-                "example": "/search?query=bohemian rhapsody"
-            },
-            status_code=400
-        )
-    
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # Obtener token
-            token_response = await client.post(
-                "https://accounts.spotify.com/api/token",
-                data={"grant_type": "client_credentials"},
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-                auth=("anonymous", "anonymous")
-            )
-            
-            if token_response.status_code != 200:
-                return JSONResponse(
-                    content={
-                        "status_code": 400,
-                        "message": "Error authenticating with Spotify",
-                        "developer": "El Impaciente",
-                        "telegram_channel": "https://t.me/Apisimpacientes"
-                    },
-                    status_code=400
+        tasks = [
+            generate_audio_for_group(api_key, group, i)
+            for i, group in enumerate(groups)
+        ]
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        pcm_arrays = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Error generating audio for group {i + 1}: {str(result)}"
                 )
             
-            access_token = token_response.json().get("access_token", "")
-            
-            # Buscar
-            search_response = await client.get(
-                f"https://api.spotify.com/v1/search?q={quote(query)}&type=track&limit=10",
-                headers={"Authorization": f"Bearer {access_token}"}
-            )
-            
-            if search_response.status_code != 200:
-                return JSONResponse(
-                    content={
-                        "status_code": 400,
-                        "message": "Error searching tracks",
-                        "developer": "El Impaciente",
-                        "telegram_channel": "https://t.me/Apisimpacientes"
-                    },
-                    status_code=400
-                )
-            
-            search_data = search_response.json()
-            tracks = []
-            
-            for item in search_data.get("tracks", {}).get("items", []):
-                tracks.append({
-                    "title": item.get("name", "Unknown"),
-                    "artists": ", ".join([a.get("name", "") for a in item.get("artists", [])]),
-                    "album": item.get("album", {}).get("name", "Unknown"),
-                    "cover": item.get("album", {}).get("images", [{}])[0].get("url", ""),
-                    "url": item.get("external_urls", {}).get("spotify", ""),
-                    "duration": format_duration(item.get("duration_ms", 0)),
-                    "popularity": item.get("popularity", 0),
-                    "explicit": item.get("explicit", False)
-                })
-            
+            pcm_data = extract_pcm_data(result['audio_data'])
+            pcm_arrays.append(pcm_data)
+        
+        concatenated_pcm = concatenate_pcm_data(pcm_arrays)
+        wav_data = add_wav_header(concatenated_pcm)
+        
+        if format.lower() == "base64":
+            audio_base64 = base64.b64encode(wav_data).decode('utf-8')
             return JSONResponse(
                 content={
                     "status_code": 200,
-                    "query": query,
-                    "results": len(tracks),
-                    "tracks": tracks,
-                    "developer": "El Impaciente",
-                    "telegram_channel": "https://t.me/Apisimpacientes"
+                    "success": True,
+                    "audio_base64": audio_base64,
+                    "format": "wav",
+                    "total_groups": total_groups,
+                    "total_voices": len(set(seg['voice'] for seg in segments)),
+                    "duration_estimate": round(len(wav_data) / (24000 * 2), 2)
                 },
                 status_code=200
             )
-        
+        else:
+            return Response(
+                content=wav_data,
+                media_type="audio/wav",
+                headers={
+                    "Content-Disposition": f'attachment; filename="audio_{int(time.time())}.wav"',
+                    "Content-Length": str(len(wav_data))
+                }
+            )
+    
+    except HTTPException:
+        raise
     except Exception as e:
-        return JSONResponse(
-            content={
-                "status_code": 500,
-                "message": "Error searching tracks",
-                "error": str(e),
-                "developer": "El Impaciente",
-                "telegram_channel": "https://t.me/Apisimpacientes"
-            },
-            status_code=500
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error: {str(e)}"
         )
-
-@app.get("/check-sources")
-async def check_sources():
-    """
-    Verifica el estado de todas las fuentes API
-    Útil para monitoreo y debugging
-    """
-    results = []
-    
-    # Track ID de prueba (canción popular)
-    test_track_id = "3n3Ppam7vgaVa1iaRUc9Lp"  # Mr. Brightside - The Killers
-    
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        for source in API_SOURCES:
-            if not source.get("active", True):
-                results.append({
-                    "name": source["name"],
-                    "priority": source.get("priority", 999),
-                    "status": "disabled",
-                    "metadata_available": False,
-                    "download_available": False
-                })
-                continue
-            
-            # Probar metadata
-            metadata_result = await try_api_source(client, source, test_track_id, "metadata")
-            
-            # Probar download
-            download_result = await try_api_source(client, source, test_track_id, "download")
-            
-            results.append({
-                "name": source["name"],
-                "priority": source.get("priority", 999),
-                "base_url": source["base_url"],
-                "metadata_available": metadata_result.get("success", False),
-                "metadata_error": metadata_result.get("error") if not metadata_result.get("success") else None,
-                "metadata_response_time": metadata_result.get("response_time"),
-                "download_available": download_result.get("success", False),
-                "download_error": download_result.get("error") if not download_result.get("success") else None,
-                "download_response_time": download_result.get("response_time"),
-                "status": "✅ online" if download_result.get("success") else "❌ offline"
-            })
-    
-    # Ordenar por prioridad
-    results.sort(key=lambda x: x.get("priority", 999))
-    
-    available_sources = [r for r in results if r["download_available"]]
-    
-    return JSONResponse(
-        content={
-            "status_code": 200,
-            "timestamp": datetime.utcnow().isoformat(),
-            "total_sources": len(API_SOURCES),
-            "available_sources": len(available_sources),
-            "offline_sources": len(results) - len(available_sources),
-            "sources": results,
-            "recommendation": (
-                f"✅ Usando: {available_sources[0]['name']}" if available_sources 
-                else "⚠️ Todas las fuentes están caídas - considera usar spotDL"
-            ),
-            "developer": "El Impaciente",
-            "telegram_channel": "https://t.me/Apisimpacientes"
-        },
-        status_code=200
-    )
 
 @app.get("/health")
 async def health_check():
-    """
-    Health check endpoint
-    Verifica el estado general de la API
-    """
-    active_sources = [s for s in API_SOURCES if s.get("active", True)]
-    
     return JSONResponse(
         content={
             "status": "healthy",
-            "service": "Spotify Downloader API - Multi-Source",
-            "version": "3.0",
-            "system": "Multi-API Fallback System",
-            "total_sources": len(API_SOURCES),
-            "active_sources": len(active_sources),
+            "service": "Gemini TTS API - Multi-Speaker",
             "timestamp": datetime.utcnow().isoformat(),
-            "developer": "El Impaciente",
-            "telegram_channel": "https://t.me/Apisimpacientes"
+            "rate_limiter": {
+                "rpm": rate_limiter.rpm,
+                "max_concurrent": rate_limiter.max_concurrent,
+                "current_requests": len(rate_limiter.request_times)
+            }
         },
         status_code=200
     )
 
-# Entry point para Vercel
 app = app
