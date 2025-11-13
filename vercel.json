@@ -15,5 +15,10 @@
   "env": {
     "PYTHONUNBUFFERED": "1"
   },
-  "regions": ["iad1"]
+  "functions": {
+    "main.py": {
+      "maxDuration": 60,
+      "memory": 1024
+    }
+  }
 }
